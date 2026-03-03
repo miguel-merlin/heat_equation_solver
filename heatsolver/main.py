@@ -16,6 +16,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from solvers import HeatEquationSolver, InverseProblemSolver
 from plots import plot_results
+from boundary_conditions import constant, linear, polynomial
 
 
 def main():
@@ -37,17 +38,15 @@ def main():
     print(f"  Grid: {nx} spatial points, {nt} time steps")
     print(f"  True k = {k_true}")
 
-    def u_initial(x):
-        """Initial condition: u(x, 0) = sin(πx)"""
-        return np.sin(np.pi * x)
+    # Boundary / initial conditions — swap these out for constant(), linear(),
+    # or polynomial([c0, c1, c2, ...]) as needed.
+    u_initial = lambda x: np.sin(np.pi * x)  # u(x, 0) = sin(πx)
+    # u_left    = constant(0.0)                  # u(0, t) = 0
+    # u_right   = constant(0.0)                  # u(L, t) = 0
 
-    def u_left(t):
-        """Left boundary: u(0, t) = 0"""
-        return 0.0
-
-    def u_right(t):
-        """Right boundary: u(L, t) = 0"""
-        return 0.0
+    # Examples (uncomment to try):
+    u_left = linear(slope=1.0, intercept=0.0)  # u(0, t) = t
+    u_right = linear(slope=-2.0, intercept=1.0)  # u(L, t) = 1 - 2t + t^2
 
     solver = HeatEquationSolver(L, T, nx, nt)
 
