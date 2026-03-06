@@ -6,13 +6,14 @@ thermal diffusivity k(x).
 
 Heat equation: u_t = k(x) * u_xx
 Domain: x ∈ [0, L], t ∈ [0, T]
-Boundary conditions: u(0,t) = u_0 (constant), u(L,t) = u_L (constant)
+Boundary conditions: u(0,t) = g_1(x), u(L,t) = g_2(x)
 Initial condition: u(x,0) = f(x)
 
 Direct problem: Given k(x), solve for u(x,t)
 Inverse problem: Given measurements u(x_i, t), estimate k(x)
 """
 
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from solvers import HeatEquationSolver, InverseProblemSolver
@@ -22,6 +23,15 @@ from boundary_conditions import constant
 
 def main():
     """Main function to demonstrate the k(x) inverse problem solution."""
+
+    parser = argparse.ArgumentParser(description="Inverse heat equation solver")
+    parser.add_argument(
+        "--n-measurement-points",
+        type=int,
+        default=5,
+        help="Number of interior measurement points (default: 5). Boundary points are always included.",
+    )
+    args = parser.parse_args()
 
     print("=" * 70)
     print("INVERSE PROBLEM FOR HEAT EQUATION: Estimating k(x)")
@@ -45,7 +55,7 @@ def main():
     print(f"  k range: [{k_true_arr.min():.4f}, {k_true_arr.max():.4f}]")
 
     # Constant boundary conditions and sinusoidal initial condition
-    u_initial = lambda x: np.sin(np.pi * x)  # u(x, 0) = sin(pi*x)
+    u_initial = lambda x: x**2 + np.sin(np.pi * x) + np.tan(np.pi * x)  # u(x, 0) = f(x)
     u_left = constant(0.0)                    # u(0, t) = 0
     u_right = constant(0.0)                   # u(L, t) = 0
 
@@ -64,7 +74,7 @@ def main():
     print("STEP 2: Extracting measurements")
     print(f"{'='*70}")
 
-    n_interior_points = 5
+    n_interior_points = args.n_measurement_points
     interior_indices = np.linspace(1, nx - 2, n_interior_points, dtype=int)
     measurement_points = np.concatenate([[0], interior_indices, [nx - 1]])
 
