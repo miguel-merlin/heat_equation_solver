@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.optimize import minimize
-from typing import Callable
+from typing import Callable, Union
 
 
 class HeatEquationSolver:
@@ -31,18 +31,18 @@ class HeatEquationSolver:
 
     def solve_direct(
         self,
-        k: float,
+        k: Union[float, np.ndarray],
         u_initial: Callable[[np.ndarray], np.ndarray],
         u_left: Callable[[np.ndarray], np.ndarray],
         u_right: Callable[[np.ndarray], np.ndarray],
     ) -> np.ndarray:
         """
-        Solve the direct heat equation problem.
+        Solve the direct heat equation problem u_t = k(x) * u_xx.
 
         Parameters:
         -----------
-        k : float
-            Thermal diffusivity
+        k : float or np.ndarray of shape (nx,)
+            Thermal diffusivity — scalar for constant, array for spatially varying.
         u_initial : callable
             Initial condition u(x, 0) = u_initial(x)
         u_left : callable
@@ -55,17 +55,18 @@ class HeatEquationSolver:
         u : np.ndarray
             Solution u(x, t) of shape (nt, nx)
         """
-        r = k * self.dt / (self.dx**2)
-        if r > 0.5:
-            print(f"Warning: Stability parameter r = {r:.4f} > 0.5")
+        k_arr = np.full(self.nx, float(k)) if np.isscalar(k) else np.asarray(k, dtype=float)
+        r = k_arr * self.dt / self.dx**2
+
+        if np.any(r > 0.5):
+            print(f"Warning: max stability parameter r = {np.max(r):.4f} > 0.5")
             print(f"Consider reducing dt or increasing dx")
 
         u = np.zeros((self.nt, self.nx))
-
         u[0, :] = u_initial(self.x)
-        for n in range(0, self.nt - 1):
-            for i in range(1, self.nx - 1):
-                u[n + 1, i] = u[n, i] + r * (u[n, i + 1] - 2 * u[n, i] + u[n, i - 1])
+
+        for n in range(self.nt - 1):
+            u[n + 1, 1:-1] = u[n, 1:-1] + r[1:-1] * (u[n, 2:] - 2 * u[n, 1:-1] + u[n, :-2])
             u[n + 1, 0] = u_left(self.t[n + 1])
             u[n + 1, -1] = u_right(self.t[n + 1])
 
@@ -93,7 +94,7 @@ class HeatEquationSolver:
 
 
 class InverseProblemSolver:
-    """Solves the inverse problem to estimate thermal diffusivity k."""
+    """Solves the inverse problem to estimate spatially-varying k(x)."""
 
     def __init__(
         self,
@@ -103,6 +104,8 @@ class InverseProblemSolver:
         u_initial: Callable,
         u_left: Callable,
         u_right: Callable,
+        degree: int = 4,
+        alpha: float = 0.0,
     ):
         """
         Parameters:
@@ -119,6 +122,12 @@ class InverseProblemSolver:
             Left boundary condition
         u_right : callable
             Right boundary condition
+        degree : int
+            Degree of the polynomial used to parameterize k(x).
+            k is represented as k(x) = c_0 + c_1*(x/L) + ... + c_d*(x/L)^d,
+            where x is normalized by L for numerical stability.
+        alpha : float
+            Tikhonov regularization weight (penalizes large coefficients).
         """
         self.solver = solver
         self.measurement_points = measurement_points
@@ -126,44 +135,59 @@ class InverseProblemSolver:
         self.u_initial = u_initial
         self.u_left = u_left
         self.u_right = u_right
+        self.degree = degree
+        self.alpha = alpha
         self.history = []
 
-    def objective_function(self, k: float) -> float:
+        # Vandermonde matrix: rows = spatial grid points, cols = polynomial terms
+        x_norm = solver.x / solver.L  # normalize to [0, 1]
+        self.V = np.vander(x_norm, degree + 1, increasing=True)  # shape (nx, degree+1)
+
+    def _coeffs_to_k_array(self, coeffs: np.ndarray) -> np.ndarray:
+        """Evaluate the polynomial k(x) = V @ coeffs on the full spatial grid."""
+        return self.V @ coeffs
+
+    def objective_function(self, coeffs: np.ndarray) -> float:
         """
-        Compute the objective function (least squares error).
+        Compute the objective function (least-squares error + regularization).
 
         Parameters:
         -----------
-        k : float or array-like
-            Thermal diffusivity parameter
+        coeffs : np.ndarray of shape (degree+1,)
+            Polynomial coefficients [c_0, c_1, ..., c_degree]
 
         Returns:
         --------
         error : float
-            Sum of squared errors between computed and measured data
         """
-        k_val = float(k[0]) if hasattr(k, "__iter__") else float(k)  # type: ignore
-
-        if k_val <= 0:
+        k_arr = self._coeffs_to_k_array(coeffs)
+        if np.any(k_arr <= 0):
             return 1e10
 
-        u_computed = self.solver.solve_direct(
-            k_val, self.u_initial, self.u_left, self.u_right
-        )
+        u_computed = self.solver.solve_direct(k_arr, self.u_initial, self.u_left, self.u_right)
         u_at_points = u_computed[:, self.measurement_points]
-        error = np.sum((u_at_points - self.u_measured) ** 2)
-        self.history.append((k_val, error))
+        error = float(np.sum((u_at_points - self.u_measured) ** 2))
 
-        return error  # type: ignore
+        if self.alpha > 0:
+            error += self.alpha * float(np.sum(coeffs[1:] ** 2))
 
-    def solve(self, k_initial_guess: float = 0.01, method: str = "Nelder-Mead") -> dict:
+        self.history.append((coeffs.copy(), error))
+        return error
+
+    def solve(
+        self,
+        k_initial_guess: Union[float, np.ndarray] = 0.01,
+        method: str = "L-BFGS-B",
+    ) -> dict:
         """
-        Solve the inverse problem to find optimal k.
+        Solve the inverse problem to find optimal k(x).
 
         Parameters:
         -----------
-        k_initial_guess : float
-            Initial guess for k
+        k_initial_guess : float or np.ndarray
+            Initial guess for k. A scalar sets the constant term c_0 with
+            all higher-order coefficients initialized to zero. An array of
+            length (degree+1) sets the full coefficient vector directly.
         method : str
             Optimization method (see scipy.optimize.minimize)
 
@@ -172,27 +196,36 @@ class InverseProblemSolver:
         result : dict
             Dictionary containing optimization results
         """
+        if np.isscalar(k_initial_guess):
+            x0 = np.zeros(self.degree + 1)
+            x0[0] = float(k_initial_guess)
+        else:
+            x0 = np.asarray(k_initial_guess, dtype=float)
+
         print(f"Starting inverse problem solution...")
-        print(f"Initial guess: k = {k_initial_guess}")
+        print(f"Initial coefficients: {x0}")
         print(f"Optimization method: {method}")
+        print(f"Polynomial degree: {self.degree}")
 
         self.history = []
         result = minimize(
             self.objective_function,
-            x0=k_initial_guess,
+            x0=x0,
             method=method,
-            options={"disp": True, "maxiter": 1000},
+            options={"disp": True, "maxiter": 2000},
         )
 
-        k_estimated = result.x[0] if hasattr(result.x, "__iter__") else result.x
+        coeffs_estimated = result.x
+        k_estimated_arr = self._coeffs_to_k_array(coeffs_estimated)
 
         print(f"\nOptimization complete!")
-        print(f"Estimated k = {k_estimated:.6f}")
+        print(f"Estimated polynomial coefficients = {coeffs_estimated}")
         print(f"Final objective value = {result.fun:.6e}")
         print(f"Number of iterations = {len(self.history)}")
 
         return {
-            "k_estimated": k_estimated,
+            "coeffs_estimated": coeffs_estimated,
+            "k_estimated_arr": k_estimated_arr,
             "objective_value": result.fun,
             "success": result.success,
             "message": result.message,

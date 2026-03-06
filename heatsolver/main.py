@@ -1,29 +1,30 @@
 """
 Inverse Problem for Heat Equation
 ==================================
-Solves the 1D heat equation inverse problem to estimate thermal diffusivity k.
+Solves the 1D heat equation inverse problem to estimate spatially-varying
+thermal diffusivity k(x).
 
-Heat equation: u_t = k * u_xx
+Heat equation: u_t = k(x) * u_xx
 Domain: x ∈ [0, L], t ∈ [0, T]
-Boundary conditions: u(0,t) = u_0(t), u(L,t) = u_L(t)
+Boundary conditions: u(0,t) = u_0 (constant), u(L,t) = u_L (constant)
 Initial condition: u(x,0) = f(x)
 
-Direct problem: Given k, solve for u(x,t)
-Inverse problem: Given measurements u(x_i, t), estimate k
+Direct problem: Given k(x), solve for u(x,t)
+Inverse problem: Given measurements u(x_i, t), estimate k(x)
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from solvers import HeatEquationSolver, InverseProblemSolver
 from plots import plot_results
-from boundary_conditions import constant, linear, polynomial
+from boundary_conditions import constant
 
 
 def main():
-    """Main function to demonstrate the inverse problem solution."""
+    """Main function to demonstrate the k(x) inverse problem solution."""
 
     print("=" * 70)
-    print("INVERSE PROBLEM FOR HEAT EQUATION")
+    print("INVERSE PROBLEM FOR HEAT EQUATION: Estimating k(x)")
     print("=" * 70)
 
     # Problem parameters
@@ -31,31 +32,31 @@ def main():
     T = 0.5  # Final time
     nx = 51  # Number of spatial points
     nt = 501  # Number of time steps
-    k_true = 0.01  # True thermal diffusivity (to be estimated)
 
     print(f"\nProblem setup:")
     print(f"  Domain: x ∈ [0, {L}], t ∈ [0, {T}]")
     print(f"  Grid: {nx} spatial points, {nt} time steps")
-    print(f"  True k = {k_true}")
 
-    # Boundary / initial conditions — swap these out for constant(), linear(),
-    # or polynomial([c0, c1, c2, ...]) as needed.
-    u_initial = lambda x: np.sin(np.pi * x)  # u(x, 0) = sin(πx)
-    # u_left    = constant(0.0)                  # u(0, t) = 0
-    # u_right   = constant(0.0)                  # u(L, t) = 0
+    # True spatially-varying diffusivity: k(x) = 0.01 + 0.005*cos(pi*x)
+    x_grid = np.linspace(0, L, nx)
+    k_true_arr = 0.01 + 0.005 * np.cos(np.pi * x_grid)
 
-    # Examples (uncomment to try):
-    u_left = linear(slope=1.0, intercept=0.0)  # u(0, t) = t
-    u_right = linear(slope=-2.0, intercept=1.0)  # u(L, t) = 1 - 2t + t^2
+    print(f"  True k(x) = 0.01 + 0.005*cos(pi*x)")
+    print(f"  k range: [{k_true_arr.min():.4f}, {k_true_arr.max():.4f}]")
+
+    # Constant boundary conditions and sinusoidal initial condition
+    u_initial = lambda x: np.sin(np.pi * x)  # u(x, 0) = sin(pi*x)
+    u_left = constant(0.0)                    # u(0, t) = 0
+    u_right = constant(0.0)                   # u(L, t) = 0
 
     solver = HeatEquationSolver(L, T, nx, nt)
 
     print(f"\n{'='*70}")
-    print("STEP 1: Solving direct problem with true k")
+    print("STEP 1: Solving direct problem with true k(x)")
     print(f"{'='*70}")
 
-    u_true = solver.solve_direct(k_true, u_initial, u_left, u_right)  # type: ignore
-    print(f"✓ Direct problem solved")
+    u_true = solver.solve_direct(k_true_arr, u_initial, u_left, u_right)
+    print(f"Direct problem solved")
     print(f"  Solution shape: {u_true.shape}")
     print(f"  u range: [{np.min(u_true):.6f}, {np.max(u_true):.6f}]")
 
@@ -72,7 +73,7 @@ def main():
         print(f"  x_{i} = {solver.x[idx]:.4f} (index {idx})")
 
     u_measured = solver.extract_measurements(u_true, measurement_points)
-    print(f"✓ Measurements extracted")
+    print(f"Measurements extracted")
     print(f"  Measurement array shape: {u_measured.shape}")
 
     noise_level = 0.0
@@ -85,31 +86,35 @@ def main():
     print("STEP 3: Solving inverse problem")
     print(f"{'='*70}")
 
+    degree = 6  # k(x) parameterized as a polynomial of this degree
     inverse_solver = InverseProblemSolver(
-        solver, measurement_points, u_measured, u_initial, u_left, u_right
+        solver, measurement_points, u_measured, u_initial, u_left, u_right,
+        degree=degree,
+        alpha=0.0,
     )
 
-    k_initial_guess = 0.02
-    result = inverse_solver.solve(k_initial_guess, method="Nelder-Mead")
+    k_initial_guess = 0.01
+    result = inverse_solver.solve(k_initial_guess, method="L-BFGS-B")
 
-    k_estimated = result["k_estimated"]
+    k_estimated_arr = result["k_estimated_arr"]
+    print(f"  Estimated polynomial coefficients: {result['coeffs_estimated']}")
 
     print(f"\n{'='*70}")
     print("STEP 4: Verification")
     print(f"{'='*70}")
 
-    u_reconstructed = solver.solve_direct(k_estimated, u_initial, u_left, u_right)  # type: ignore
+    u_reconstructed = solver.solve_direct(k_estimated_arr, u_initial, u_left, u_right)
 
-    relative_error_k = abs(k_estimated - k_true) / k_true * 100
-    max_error_u = np.max(np.abs(u_true - u_reconstructed))
+    max_error_k  = np.max(np.abs(k_true_arr - k_estimated_arr))
+    mean_error_k = np.mean(np.abs(k_true_arr - k_estimated_arr))
+    max_error_u  = np.max(np.abs(u_true - u_reconstructed))
     mean_error_u = np.mean(np.abs(u_true - u_reconstructed))
 
     print(f"\nResults:")
-    print(f"  True k              = {k_true}")
-    print(f"  Estimated k         = {k_estimated:.6f}")
-    print(f"  Relative error in k = {relative_error_k:.4f}%")
-    print(f"  Max error in u      = {max_error_u:.6e}")
-    print(f"  Mean error in u     = {mean_error_u:.6e}")
+    print(f"  Max  error in k(x) = {max_error_k:.6e}")
+    print(f"  Mean error in k(x) = {mean_error_k:.6e}")
+    print(f"  Max  error in u    = {max_error_u:.6e}")
+    print(f"  Mean error in u    = {mean_error_u:.6e}")
 
     print(f"\n{'='*70}")
     print("STEP 5: Generating plots")
@@ -120,13 +125,13 @@ def main():
         u_true,
         u_reconstructed,
         measurement_points,
-        k_true,
-        k_estimated,
+        k_true_arr,
+        k_estimated_arr,
         result["history"],
     )
 
     plt.savefig("results/inverse_heat_results.png", dpi=150, bbox_inches="tight")
-    print(f"✓ Results saved to 'results/inverse_heat_results.png'")
+    print(f"Results saved to 'results/inverse_heat_results.png'")
 
     plt.show()
 
